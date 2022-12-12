@@ -1,0 +1,213 @@
+#include"DHT.h"         // DHT for Library library
+//#include <WiFi.h>           // WiFi control for ESP32
+#include <ThingsBoard.h>    // ThingsBoard SDK
+#if defined(ESP32)
+#include <WiFi.h>
+#elif defined(ESP8266)
+#include <ESP6266WiFi.h>
+#endif
+
+#define CURRENT_FIRMWARE_TITLE    "TB_OTA_UPDATE2"
+#define CURRENT_FIRMWARE_VERSION  "1.4.1"
+#define DHT11PIN 17     // what digital pin we're connected to
+
+#define led 2
+//#define DHTTYPE DHT11   // DHT 11
+// DHT dht(DHTPIN, DHTTYPE);
+DHT dht(DHT11PIN,DHT11);
+float duration_us, distance_cm;
+// Helper macro to calculate array size
+#define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
+// WiFi access point
+#define WIFI_AP_NAME       "sierracartel-1stflr"// "WIFI_AP"
+// WiFi password
+#define WIFI_PASSWORD      "9986357680"// "WIFI_PASSWORD"
+
+// See https://thingsboard.io/docs/getting-started-guides/helloworld/
+// to understand how to obtain an access token
+#define TOKEN            "eMAVCKbLphhicONvVc44"  //2PKWTBvmLy9tkXXU4QLk
+// ThingsBoard server instance.http://192.168.1.14:8080
+#define THINGSBOARD_SERVER  "demo.thingsboard.io"
+
+// Baud rate for debug serial
+//#define SERIAL_DEBUG_BAUD    115200
+
+// Initialize ThingsBoard client
+WiFiClient espClient;
+// Initialize ThingsBoard instance
+ThingsBoard tb(espClient);
+// the Wifi radio's status
+int status = WL_IDLE_STATUS;
+
+
+// Period of sending a temperature/humidity data.
+int send_delay = 2000;
+unsigned long millis_counter;
+void InitWiFi()
+{
+  Serial.println("Connecting to AP ...");
+  // attempt to connect to WiFi network
+
+  WiFi.begin(WIFI_AP_NAME, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Connected to AP");
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  status = WiFi.status();
+  if ( status != WL_CONNECTED) {
+    WiFi.begin(WIFI_AP_NAME, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println("Connected to AP");
+  }
+}
+
+// Setup an application
+void setup() {
+  // Initialize serial for debugging
+  Serial.begin(115200);
+  WiFi.begin(WIFI_AP_NAME, WIFI_PASSWORD);
+  Serial.println("DHT11 Humidity & temprature Sensor\n\n");
+  delay(1000);
+  InitWiFi();
+   
+  pinMode(led,OUTPUT);
+
+  // Initialize temperature sensor
+  dht.begin();
+}
+
+
+bool subscribed = false;
+
+RPC_Response 	esp32ota(const RPC_Data &data)
+{
+  Serial.println("Received the set switch method 4!");
+  char params[10];
+  serializeJson(data, params);
+  //Serial.println(params);
+  String _params = params;
+  if (_params == "true") {
+    Serial.println("Toggle Switch - 1 => On");
+    digitalWrite(led,LOW);
+
+  }
+  else  if (_params == "false")  {
+    Serial.println(" Switch - 1 => Off");
+    digitalWrite(led,HIGH);
+  }
+}
+
+
+const size_t callbacks_size = 1;
+RPC_Callback callbacks[callbacks_size] = {
+  { "getValue_1", esp32ota }   // enter the name of your switch variable inside the string
+
+};
+
+
+
+// Main application loop
+void loop() {
+   
+
+  // Reconnect to WiFi, if needed
+  if (WiFi.status() != WL_CONNECTED) {
+    reconnect();
+    return;
+  }
+
+
+  // Reconnect to ThingsBoard, if needed
+  if (!tb.connected()) {
+    // Connect to the ThingsBoard
+    Serial.print("Connecting to: ");
+    Serial.print(THINGSBOARD_SERVER);
+    Serial.print(" with token ");
+    Serial.println(TOKEN);
+    if (!tb.connect(THINGSBOARD_SERVER, TOKEN)) {
+      Serial.println("Failed to connect");
+      delay(1000);
+      return;
+    }
+     Serial.println("Firwmare Update...");
+    tb.Firmware_OTA_Subscribe();
+    if (tb.Firmware_Update(CURRENT_FIRMWARE_TITLE, CURRENT_FIRMWARE_VERSION)) {
+      Serial.println("Done, Reboot now");
+#if defined(ESP32)
+      esp_restart();
+#elif defined(ESP8266)
+      ESP.restart();
+#endif
+    }
+    else {
+      Serial.println("No new firmware");
+    }
+    tb.Firmware_OTA_Unsubscribe();
+
+  }
+
+
+    
+  if (!subscribed) {
+    Serial.println("Subscribing for RPC...");
+
+    // Perform a subscription. All consequent data processing will happen in
+    // processTemperatureChange() and processSwitchChange() functions,
+    // as denoted by callbacks[] array.
+    if (!tb.RPC_Subscribe(callbacks, callbacks_size)) {
+      Serial.println("Failed to subscribe for RPC");
+      return;
+    }
+
+    Serial.println("Subscribe done");
+    subscribed = true;
+  }
+
+
+ 
+
+  // Check if it is a time to send DHT11 temperature and humidity
+  if(millis()-millis_counter > send_delay) {
+    Serial.println("Sending data...");
+
+    // Uploads new telemetry to ThingsBoard using MQTT.
+    // See https://thingsboard.io/docs/reference/mqtt-api/#telemetry-upload-api
+    // for more details
+     float Temp=dht.readTemperature();
+    float Humi=dht.readHumidity();
+    //DHT.read11(dht_apin);
+
+    if (isnan(Temp) || isnan(Humi)) {
+      Serial.println("Failed to read from DHT sensor!");
+    } else {
+      Serial.print("Temperature:  ");
+    Serial.print(Temp);
+    Serial.print("Humidity:  ");
+    Serial.print(Humi);
+   
+
+      tb.sendTelemetryFloat("temperature",Temp );
+      tb.sendTelemetryFloat("humidity",Humi);
+      
+    }
+
+    millis_counter = millis(); //reset millis counter*/
+  }
+   
+   
+    
+
+
+
+  // Process messages
+  tb.loop();
+}
